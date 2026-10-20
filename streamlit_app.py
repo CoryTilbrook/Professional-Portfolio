@@ -921,7 +921,8 @@ def create_prd_pdf(markdown_text):
 
 st.title("AI Product Requirements Agent")
 st.write(
-    "This app is intended to demo AI Generated PRD functionality but due to rate limits this may not generate all PRD contents and is intended for demonstration."
+    "This app is intended to demo AI Generated PRD functionality. Due to rate limits this may not " \
+    "generate all PRD contents and is intended for demonstration."
 )
 st.divider()
 
