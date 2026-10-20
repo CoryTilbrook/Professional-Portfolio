@@ -115,9 +115,15 @@ def ask_clarifying_questions(product_idea, rules):
     system_prompt = (
         rules
         + "\n\nCURRENT TASK:\n"
-        "Conduct product discovery.\n"
-        "Ask focused clarifying questions.\n"
-        "Do not generate the PRD yet.\n"
+        "Generate a complete, detailed PRD now.\n"
+        "The Streamlit application has already handled the "
+        "feature approval decision.\n"
+        "Treat the supplied feature and story breakdown as final.\n"
+        "Do not ask for approval, confirmation, or additional input.\n"
+        "Do not describe what you will generate later.\n"
+        "Follow all applicable requirements in the rules file.\n"
+        "Return only the complete PRD document.\n"
+        "Begin directly with the PRD title.\n"
     )
 
     user_prompt = f"""
@@ -396,6 +402,14 @@ IMPORTANT REQUIREMENTS:
 
 10. Follow every applicable instruction
     in the external PRD rules file.
+
+11. The approval decision has already been completed
+    by the application.
+
+12. Do not ask the user to approve, confirm, or select
+    anything.
+
+13. Return the complete PRD in this response.
 
 Generate the complete PRD.
 """
