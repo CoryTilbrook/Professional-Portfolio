@@ -1,4 +1,7 @@
-from ollama import chat
+from groq import Groq
+import streamlit as st
+from google import genai
+from google.genai import types
 from pathlib import Path
 from datetime import datetime
 
@@ -6,7 +9,11 @@ from datetime import datetime
 # CONFIGURATION
 # ==========================================
 
-MODEL = "Qwen3:8b"
+MODEL = "openai/gpt-oss-120b"
+
+client = Groq(
+    api_key=st.secrets["GROG_API_KEY"]
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -39,18 +46,16 @@ def load_agent_rules():
 
     return rules
 
-
 # ==========================================
-# OLLAMA COMMUNICATION
+# Send Instructions to Grog
 # ==========================================
-
 def ask_model(system_prompt, user_prompt):
     """
     Send instructions and user input
-    to the local Ollama model.
+    to the Groq model.
     """
 
-    response = chat(
+    response = client.chat.completions.create(
         model=MODEL,
         messages=[
             {
@@ -64,8 +69,7 @@ def ask_model(system_prompt, user_prompt):
         ]
     )
 
-    return response.message.content
-
+    return response.choices[0].message.content
 
 # ==========================================
 # USER CONFIGURATION
