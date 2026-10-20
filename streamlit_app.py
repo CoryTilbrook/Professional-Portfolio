@@ -590,7 +590,7 @@ def create_prd_pdf(markdown_text):
 
 st.title("AI Product Requirements Agent")
 st.write(
-    "Transform product ideas into structured, stakeholder-ready "
+    "Transform product ideas into structured, engineering-ready "
     "Product Requirements Documents."
 )
 st.divider()
