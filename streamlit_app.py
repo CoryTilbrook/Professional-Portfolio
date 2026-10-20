@@ -921,8 +921,7 @@ def create_prd_pdf(markdown_text):
 
 st.title("AI Product Requirements Agent")
 st.write(
-    "Transform product ideas into structured, engineering-ready "
-    "Product Requirements Documents."
+    "This app is intended to demo AI Generated PRD functionality but due to rate limits this may not generate all PRD contents and is intended for demonstration."
 )
 st.divider()
 
