@@ -27,9 +27,7 @@ This repository showcases professional projects, technical implementations, and 
 
 [![Try the PRD Agent](https://img.shields.io/badge/Try%20the%20PRD%20Agent-Open%20App-FF4B4B?logo=streamlit)](https://professional-portfolio-v7hhnnesdgen5ycu2kj5jr.streamlit.app/)
 
-A Python-based AI agent designed to support product management workflows and streamline requirements development.
-
-This project explores practical applications of AI in product management, including requirements generation and workflow automation.
+A Python-based AI agent designed to support and streamline requirements development.
 
 Additional projects and capabilities will be added as the portfolio evolves.
 
