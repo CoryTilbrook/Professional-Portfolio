@@ -805,12 +805,12 @@ elif st.session_state.stage == "complete":
     st.divider()
 
     pdf_data = create_prd_pdf(
-    st.session_state.prd
-)
+        st.session_state.prd
+    )
 
-st.download_button(
-    label="Download PRD as PDF",
-    data=pdf_data,
-    file_name="Product_Requirements_Document.pdf",
-    mime="application/pdf",
-)
+    st.download_button(
+        label="Download PRD as PDF",
+        data=pdf_data,
+        file_name="Product_Requirements_Document.pdf",
+        mime="application/pdf",
+    )
