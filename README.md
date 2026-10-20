@@ -25,7 +25,7 @@ This repository showcases professional projects, technical implementations, and 
 
 ### AI-Powered Product Requirements Agent
 
-[![Try the PRD Agent](https://img.shields.io/badge/Try%20the%20PRD%20Agent-Open%20App-FF4B4B?logo=streamlit)](https://professional-portfolio-v7hhnnesdgen5ycu2kj5jr.streamlit.app/)
+[![Try the PRD Agent](https://img.shields.io/badge/Try%20the%20PRD%20Agent-Open%20App-FF4B4B?logo=streamlit)](https://prdagent.streamlit.app/)
 
 A Python-based AI agent designed to support and streamline requirements development.
 
