@@ -1,6 +1,19 @@
 import re
 import streamlit as st
+from io import BytesIO
+from html import escape
 
+from reportlab.lib.enums import TA_CENTER
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.platypus import (
+    SimpleDocTemplate,
+    Paragraph,
+    Spacer,
+    ListFlowable,
+    ListItem,
+)
 from prd_agent import (
     load_agent_rules,
     ask_clarifying_questions,
@@ -206,6 +219,146 @@ def build_discovery_answers():
         )
 
     return "\n\n".join(lines)
+
+# ==========================================
+# Creae PRD
+# ==========================================
+def create_prd_pdf(markdown_text):
+    """Convert the generated Markdown PRD into a PDF."""
+
+    pdf_buffer = BytesIO()
+
+    document = SimpleDocTemplate(
+        pdf_buffer,
+        pagesize=letter,
+        rightMargin=0.7 * inch,
+        leftMargin=0.7 * inch,
+        topMargin=0.7 * inch,
+        bottomMargin=0.7 * inch,
+        title="Product Requirements Document",
+    )
+
+    styles = getSampleStyleSheet()
+
+    styles.add(
+        ParagraphStyle(
+            name="PRDTitle",
+            parent=styles["Title"],
+            alignment=TA_CENTER,
+            fontSize=20,
+            leading=24,
+            spaceAfter=18,
+        )
+    )
+
+    styles.add(
+        ParagraphStyle(
+            name="PRDHeading1",
+            parent=styles["Heading1"],
+            fontSize=16,
+            leading=20,
+            spaceBefore=14,
+            spaceAfter=8,
+        )
+    )
+
+    styles.add(
+        ParagraphStyle(
+            name="PRDHeading2",
+            parent=styles["Heading2"],
+            fontSize=13,
+            leading=17,
+            spaceBefore=12,
+            spaceAfter=6,
+        )
+    )
+
+    story = []
+    bullet_items = []
+
+    def add_bullets():
+        if bullet_items:
+            story.append(
+                ListFlowable(
+                    [
+                        ListItem(
+                            Paragraph(item, styles["BodyText"])
+                        )
+                        for item in bullet_items
+                    ],
+                    bulletType="bullet",
+                    leftIndent=18,
+                )
+            )
+            story.append(Spacer(1, 6))
+            bullet_items.clear()
+
+    for raw_line in markdown_text.splitlines():
+        line = raw_line.strip()
+
+        if not line:
+            add_bullets()
+            story.append(Spacer(1, 6))
+            continue
+
+        if line.startswith("### "):
+            add_bullets()
+            story.append(
+                Paragraph(
+                    escape(line[4:]),
+                    styles["PRDHeading2"],
+                )
+            )
+
+        elif line.startswith("## "):
+            add_bullets()
+            story.append(
+                Paragraph(
+                    escape(line[3:]),
+                    styles["PRDHeading1"],
+                )
+            )
+
+        elif line.startswith("# "):
+            add_bullets()
+            story.append(
+                Paragraph(
+                    escape(line[2:]),
+                    styles["PRDTitle"],
+                )
+            )
+
+        elif line.startswith(("- ", "* ")):
+            bullet_items.append(escape(line[2:]))
+
+        else:
+            add_bullets()
+
+            formatted_line = escape(line)
+            formatted_line = re.sub(
+                r"\*\*(.+?)\*\*",
+                r"<b>\1</b>",
+                formatted_line,
+            )
+            formatted_line = re.sub(
+                r"`(.+?)`",
+                r"<font name='Courier'>\1</font>",
+                formatted_line,
+            )
+
+            story.append(
+                Paragraph(
+                    formatted_line,
+                    styles["BodyText"],
+                )
+            )
+            story.append(Spacer(1, 6))
+
+    add_bullets()
+    document.build(story)
+
+    pdf_buffer.seek(0)
+    return pdf_buffer.getvalue()
 
 
 # ==========================================
@@ -651,16 +804,13 @@ elif st.session_state.stage == "complete":
 
     st.divider()
 
-    st.download_button(
-        label="Download PRD",
-        data=st.session_state.prd,
-        file_name=(
-            "Product_Requirements_Document.md"
-        ),
-        mime="text/markdown"
-    )
+    pdf_data = create_prd_pdf(
+    st.session_state.prd
+)
 
-    st.info(
-        "Microsoft Word export will be "
-        "added in a future version."
-    )
+st.download_button(
+    label="Download PRD as PDF",
+    data=pdf_data,
+    file_name="Product_Requirements_Document.pdf",
+    mime="application/pdf",
+)
