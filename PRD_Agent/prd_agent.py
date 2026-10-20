@@ -10,14 +10,13 @@ from datetime import datetime
 MODEL = "openai/gpt-oss-120b"
 
 client = Groq(
-    api_key=st.secrets["GROG_API_KEY"]
+    api_key=st.secrets["GROQ_API_KEY"]
 )
 
-BASE_DIR = Path(__file__).resolve().parent
+APP_DIRECTORY = Path(__file__).resolve().parent
+RULES_FILE = APP_DIRECTORY / "prd_rules.md"
 
-RULES_FILE = BASE_DIR / "prd_rules.md"
-
-OUTPUT_DIR = BASE_DIR / "generated_prds"
+OUTPUT_DIR = APP_DIRECTORY / "generated_prds"
 
 
 # ==========================================
