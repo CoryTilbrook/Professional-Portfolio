@@ -27,7 +27,6 @@ from prd_agent import (
     ask_clarifying_questions,
     ask_model,
     generate_feature_breakdown,
-    generate_prd,
     load_agent_rules,
 )
 
@@ -38,7 +37,7 @@ from prd_agent import (
 
 st.set_page_config(
     page_title="AI PRD Agent",
-    page_icon="📋",
+    page_icon="ðŸ“‹",
     layout="wide",
 )
 
@@ -58,6 +57,8 @@ DEFAULTS = {
     "skipped": {},
     "breakdown": "",
     "prd": "",
+    "prd_modifications": [],
+    "modification_input": "",
 }
 
 
@@ -168,12 +169,332 @@ def build_discovery_answers():
     return "\n\n".join(lines)
 
 
+def clean_generated_markdown(text):
+    """Remove model-generated HTML that should not appear in the PRD."""
+    if not text:
+        return ""
+
+    cleaned_lines = []
+    br_pattern = r"(?:<br\s*/?>|&lt;br\s*/?&gt;)"
+    for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        if "|" in line and line.strip().startswith("|"):
+            # A physical newline would break the Markdown table row.
+            line = re.sub(br_pattern, "; ", line, flags=re.IGNORECASE)
+        else:
+            line = re.sub(br_pattern, "  \n", line, flags=re.IGNORECASE)
+        line = re.sub(r"&nbsp;|&#160;", " ", line, flags=re.IGNORECASE)
+        cleaned_lines.append(line)
+
+    cleaned = "\n".join(cleaned_lines)
+    cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
+    cleaned = re.sub(r"\n{4,}", "\n\n\n", cleaned)
+    return cleaned.strip()
+
+
+# ==========================================
+# COMPLETE, NON-TRUNCATED PRD GENERATION
+# ==========================================
+
+def generate_complete_prd(
+    product_idea,
+    discovery_questions,
+    discovery_answers,
+    feature_breakdown,
+    agent_rules,
+    modification_details="",
+    progress_callback=None,
+):
+    """Generate the PRD in bounded sections so one response cannot truncate it.
+
+    Large PRDs regularly exceed a model's maximum response length. Generating
+    independent, explicitly scoped sections keeps every response within a safe
+    size and lets Streamlit/PDF receive the complete document.
+    """
+    shared_context = f"""
+PRODUCT IDEA:
+{product_idea}
+
+DISCOVERY QUESTIONS:
+{discovery_questions}
+
+DISCOVERY ANSWERS:
+{discovery_answers}
+
+APPROVED FEATURE BREAKDOWN:
+{feature_breakdown}
+
+ADDITIONAL MODIFICATION DETAILS:
+{modification_details if modification_details.strip() else "No additional modifications were requested."}
+
+INSTRUCTIONS:
+- Follow the supplied agent rules and all confirmed requirements.
+- Do not invent answers for unresolved questions.
+- Apply all additional modification details throughout every applicable PRD
+  section while preserving the original product idea, discovery questions,
+  discovery answers, and approved feature breakdown.
+- Use concise but implementation-ready Markdown.
+- Do not repeat the document title.
+- Do not wrap content in a Markdown code fence.
+- Return only the sections requested in this call.
+"""
+
+    foundation_request = """
+Write sections 1 through 7:
+1. Executive Summary
+2. Problem Statement
+3. Goals and Measurable Success Metrics
+4. Non-Goals
+5. User Personas
+6. Assumptions and Dependencies
+7. Scope, with separate In Scope and Out of Scope subsections
+
+Use tables only when they improve clarity. Start with ## 1. Executive Summary.
+"""
+    requirements_request = """
+Write section 8, Detailed Functional Requirements.
+Cover every capability in the approved feature breakdown. Organize the section
+by feature with requirements, business rules, validation, error handling,
+permissions, dependencies, and expected system behavior. Start with
+## 8. Detailed Functional Requirements.
+"""
+    closing_request = """
+Write sections 10 through 20:
+10. Non-Functional Requirements
+11. Data and Reporting Requirements
+12. Security, Permissions, and Audit Requirements
+13. Integration Requirements
+14. Risks and Mitigations
+15. MVP Definition
+16. Phased Rollout Plan
+17. Launch and Adoption Plan
+18. KPIs and Post-Launch Measurement Plan
+19. Open Questions
+20. Approval and Next Steps
+
+Include concrete reliability, performance, accessibility, security, data,
+operational, adoption, and measurement expectations. Start with
+## 10. Non-Functional Requirements.
+"""
+
+    # First create a compact inventory. This prevents a fixed story limit and
+    # gives us an exact checklist to validate before displaying the preview.
+    requirement_text = f"{product_idea}\n{discovery_answers}\n{feature_breakdown}"
+    minimum_match = re.findall(
+        r"at\s+least\s+(\d+)\s+(?:detailed\s+)?user\s+stories",
+        requirement_text,
+        flags=re.IGNORECASE,
+    )
+    number_words = {
+        "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+        "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+        "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
+        "fifteen": 15, "sixteen": 16, "seventeen": 17,
+        "eighteen": 18, "nineteen": 19, "twenty": 20,
+    }
+    word_matches = re.findall(
+        r"at\s+least\s+(" + "|".join(number_words) +
+        r")\s+(?:detailed\s+)?user\s+stories",
+        requirement_text,
+        flags=re.IGNORECASE,
+    )
+    requested_minimums = [int(value) for value in minimum_match]
+    requested_minimums.extend(number_words[value.lower()] for value in word_matches)
+    minimum_story_count = max(requested_minimums, default=1)
+
+    inventory_prompt = f"""
+Create a complete story inventory for this PRD.
+
+{shared_context}
+
+Identify every distinct user story required by the approved feature breakdown,
+product prompt, and confirmed discovery answers. Do not cap the number of
+stories. Do not combine unrelated workflows merely to reduce the count. If the
+requirements specify a minimum number of stories, meet or exceed it.
+
+Return only one line per story in this exact format:
+STORY | Feature or capability | Short story title
+"""
+
+    def parse_story_inventory(raw_inventory):
+        parsed = []
+        for raw_line in raw_inventory.splitlines():
+            line = raw_line.strip().lstrip("-*0123456789. ")
+            parts = [part.strip() for part in line.split("|")]
+            if len(parts) >= 3 and parts[0].upper().startswith("STORY"):
+                feature = parts[1]
+                title = " | ".join(parts[2:]).strip()
+                if feature and title:
+                    parsed.append((feature, title))
+        return parsed
+
+    if progress_callback:
+        progress_callback(0, 1)
+    inventory_raw = ask_model(agent_rules, inventory_prompt).strip()
+    story_inventory = parse_story_inventory(inventory_raw)
+
+    if len(story_inventory) < minimum_story_count:
+        retry_prompt = f"""
+The previous story inventory contained only {len(story_inventory)} valid
+stories, but the confirmed requirements require at least
+{minimum_story_count}. Rebuild the complete inventory without omitting any
+feature, role, workflow, integration, security requirement, reporting need,
+administrative capability, or exception path.
+
+{shared_context}
+
+Return only one line per story in this exact format:
+STORY | Feature or capability | Short story title
+"""
+        inventory_raw = ask_model(agent_rules, retry_prompt).strip()
+        story_inventory = parse_story_inventory(inventory_raw)
+
+    if len(story_inventory) < minimum_story_count:
+        raise ValueError(
+            "The model did not return the complete required story inventory. "
+            f"Expected at least {minimum_story_count}; received "
+            f"{len(story_inventory)}. Please try generating the preview again."
+        )
+
+    numbered_stories = [
+        (number, feature, title)
+        for number, (feature, title) in enumerate(story_inventory, start=1)
+    ]
+    batch_size = 3
+    story_batches = [
+        numbered_stories[index:index + batch_size]
+        for index in range(0, len(numbered_stories), batch_size)
+    ]
+
+    section_requests = [foundation_request, requirements_request]
+    for batch_index, batch in enumerate(story_batches):
+        story_list = "\n".join(
+            f"- Story {number}: [{feature}] {title}"
+            for number, feature, title in batch
+        )
+        first_heading = (
+            "Start with ## 9. User Stories and Acceptance Criteria."
+            if batch_index == 0
+            else "Continue Section 9 without repeating the Section 9 heading."
+        )
+        section_requests.append(
+            f"""
+{first_heading}
+
+Write exactly these planned stories in this response:
+{story_list}
+
+For every story, use its assigned heading exactly as ### Story N: Title and
+include:
+- Feature or capability
+- A complete As a / I want / So that statement
+- Detailed functional requirements
+- Relevant business rules, permissions, validation, and edge cases
+- Multiple Given / When / Then acceptance-criteria scenarios
+
+Do not omit, renumber, merge, or replace any planned story. Do not use a wide
+Markdown table or fenced code blocks.
+"""
+        )
+    section_requests.append(closing_request)
+
+    generated_sections = []
+    total = len(section_requests)
+    for index, request in enumerate(section_requests, start=1):
+        if progress_callback:
+            progress_callback(index - 1, total)
+        prompt = f"""
+Create part {index} of {total} of a complete Product Requirements Document.
+
+{shared_context}
+
+COMPLETE STORY INVENTORY:
+{inventory_raw}
+
+SECTION REQUEST:
+{request}
+"""
+        section = clean_generated_markdown(ask_model(agent_rules, prompt))
+        if not section:
+            raise ValueError(f"The model returned no content for PRD part {index}.")
+
+        # Story batches must contain every exact assigned story number. Retry a
+        # deficient batch once instead of silently returning a partial PRD.
+        story_numbers = [
+            int(value)
+            for value in re.findall(r"Story\s+(\d+)\s*:", request)
+        ]
+        if story_numbers:
+            returned_numbers = {
+                int(value)
+                for value in re.findall(
+                    r"(?im)^#{2,4}\s*Story\s+(\d+)\b",
+                    section,
+                )
+            }
+            missing = [number for number in story_numbers if number not in returned_numbers]
+            if missing:
+                retry = f"""
+Your previous response omitted planned Story numbers: {missing}.
+Regenerate this entire story batch and include every requested story exactly
+once with its assigned ### Story N: Title heading.
+
+{shared_context}
+
+SECTION REQUEST:
+{request}
+"""
+                section = clean_generated_markdown(ask_model(agent_rules, retry))
+                returned_numbers = {
+                    int(value)
+                    for value in re.findall(
+                        r"(?im)^#{2,4}\s*Story\s+(\d+)\b",
+                        section,
+                    )
+                }
+                missing = [
+                    number for number in story_numbers if number not in returned_numbers
+                ]
+                if missing:
+                    raise ValueError(
+                        "The model omitted required stories after retry: "
+                        + ", ".join(str(number) for number in missing)
+                    )
+
+        generated_sections.append(section)
+
+    complete_prd = clean_generated_markdown(
+        "# Product Requirements Document\n\n" + "\n\n".join(
+        generated_sections
+        )
+    )
+    returned_story_numbers = {
+        int(value)
+        for value in re.findall(
+            r"(?im)^#{2,4}\s*Story\s+(\d+)\b",
+            complete_prd,
+        )
+    }
+    expected_story_numbers = {number for number, _, _ in numbered_stories}
+    missing_final = sorted(expected_story_numbers - returned_story_numbers)
+    if missing_final:
+        raise ValueError(
+            "The completed PRD is missing planned stories: "
+            + ", ".join(str(number) for number in missing_final)
+        )
+
+    if progress_callback:
+        progress_callback(total, total)
+
+    return complete_prd
+
+
 # ==========================================
 # PROFESSIONAL PDF RENDERER
 # ==========================================
 
 def _normalize_markdown(text):
     """Normalize common model output without changing its meaning."""
+    text = clean_generated_markdown(text)
     replacements = {
         "\u2010": "-",
         "\u2011": "-",
@@ -187,7 +508,10 @@ def _normalize_markdown(text):
     }
     for old, new in replacements.items():
         text = text.replace(old, new)
-    return text.replace("\r\n", "\n").replace("\r", "\n")
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    # Fenced Gherkin/Markdown inside table cells otherwise leaks backticks.
+    text = re.sub(r"```(?:gherkin|markdown|text)?\s*", "", text, flags=re.IGNORECASE)
+    return text.replace("```", "")
 
 
 def _inline_markdown(text):
@@ -391,7 +715,7 @@ def _regular_table(rows, styles, available_width):
 
 
 def _story_table(rows, styles, available_width):
-    """Render very long story/acceptance rows as readable stacked cards."""
+    """Render story rows as split-safe blocks instead of unsplittable tables."""
     elements = []
     header = rows[0]
 
@@ -399,28 +723,35 @@ def _story_table(rows, styles, available_width):
         story_text = row[0] if row else ""
         acceptance_text = row[1] if len(row) > 1 else ""
 
-        card_data = [
-            [Paragraph(f"Story {number}", styles["table_header"])],
-            [Paragraph(f"<b>{escape(header[0])}</b><br/>{_inline_markdown(story_text)}", styles["table_cell"])],
-            [Paragraph(f"<b>{escape(header[1])}</b><br/>{_inline_markdown(acceptance_text)}", styles["table_cell"])],
-        ]
-        card = Table(card_data, colWidths=[available_width], hAlign="LEFT")
-        card.setStyle(
+        # Only the short label is kept in a table. The long story paragraphs
+        # remain ordinary flowables, so ReportLab can split them across pages.
+        label = Table(
+            [[Paragraph(f"Story {number}", styles["table_header"])]],
+            colWidths=[available_width],
+            hAlign="LEFT",
+        )
+        label.setStyle(
             TableStyle(
                 [
                     ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#24527A")),
-                    ("BACKGROUND", (0, 1), (-1, 1), colors.HexColor("#F5F7FA")),
-                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                    ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#9AAABD")),
-                    ("LINEBELOW", (0, 1), (-1, 1), 0.4, colors.HexColor("#CBD5E1")),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 7),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 7),
-                    ("TOPPADDING", (0, 0), (-1, -1), 6),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                    ("TOPPADDING", (0, 0), (-1, -1), 5),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
                 ]
             )
         )
-        elements.extend([card, Spacer(1, 9)])
+        elements.extend(
+            [
+                label,
+                Spacer(1, 5),
+                Paragraph(f"<b>{escape(header[0])}</b>", styles["body"]),
+                Paragraph(_inline_markdown(story_text), styles["body"]),
+                Paragraph(f"<b>{escape(header[1])}</b>", styles["body"]),
+                Paragraph(_inline_markdown(acceptance_text), styles["body"]),
+                Spacer(1, 10),
+            ]
+        )
 
     return elements
 
@@ -686,14 +1017,14 @@ elif st.session_state.stage == "discovery":
 
     col1, col2, col3 = st.columns(3)
     with col1:
-        if index > 0 and st.button("← Previous Question", use_container_width=True):
+        if index > 0 and st.button("â† Previous Question", use_container_width=True):
             save_current_answer()
             previous_question()
     with col2:
         if st.button("Skip for Now", use_container_width=True):
             skip_current_question()
     with col3:
-        label = "Review Answers" if index == total - 1 else "Next Question →"
+        label = "Review Answers" if index == total - 1 else "Next Question â†’"
         if st.button(label, type="primary", use_container_width=True):
             save_current_answer()
             advance_question()
@@ -810,22 +1141,35 @@ elif st.session_state.stage == "generate":
     st.header("Generate Product Requirements Document")
     st.write("Your discovery and feature analysis are complete.")
 
-    if st.button("Generate PRD", type="primary"):
+    if st.button("Generate PRD Preview", type="primary"):
         discovery_answers = build_discovery_answers()
+        generation_progress = st.progress(0, text="Preparing PRD sections...")
+
+        def update_generation_progress(completed, total):
+            percent = int((completed / total) * 100) if total else 0
+            if completed >= total:
+                message = "PRD generation complete."
+            else:
+                message = f"Generating PRD section group {completed + 1} of {total}..."
+            generation_progress.progress(percent, text=message)
+
         with st.spinner("Generating your Product Requirements Document..."):
             try:
-                prd = generate_prd(
+                prd = generate_complete_prd(
                     st.session_state.product_idea,
                     st.session_state.questions_raw,
                     discovery_answers,
                     st.session_state.breakdown,
                     rules,
+                    progress_callback=update_generation_progress,
                 )
             except Exception as error:
                 st.error(f"PRD generation failed: {error}")
                 st.stop()
 
         st.session_state.prd = prd
+        st.session_state.prd_modifications = []
+        st.session_state.modification_input = ""
         st.session_state.stage = "complete"
         st.rerun()
 
@@ -835,8 +1179,14 @@ elif st.session_state.stage == "generate":
 # ==========================================
 
 elif st.session_state.stage == "complete":
-    st.header("Generated Product Requirements Document")
-    st.success("PRD generation completed.")
+    if st.session_state.pop("clear_modification_input", False):
+        st.session_state.modification_input = ""
+
+    # Also cleans PRDs created before this sanitation rule was introduced.
+    st.session_state.prd = clean_generated_markdown(st.session_state.prd)
+
+    st.header("Product Requirements Document Preview")
+    st.success("PRD preview generated. Review it before downloading.")
     st.markdown(st.session_state.prd)
     st.divider()
 
@@ -846,9 +1196,95 @@ elif st.session_state.stage == "complete":
         st.error(f"PDF generation failed: {error}")
         st.stop()
 
-    st.download_button(
-        label="Download PRD as PDF",
-        data=pdf_data,
-        file_name="Product_Requirements_Document.pdf",
-        mime="application/pdf",
-    )
+    modify_column, download_column = st.columns([2, 1], gap="large")
+
+    with modify_column:
+        st.subheader("Modify Information")
+        st.write(
+            "Add details or corrections. The agent will regenerate the complete "
+            "preview using the original prompt, discovery questions and answers, "
+            "approved feature breakdown, and all prior modifications."
+        )
+
+        modification = st.text_area(
+            "Changes to the prompt or discovery answers",
+            key="modification_input",
+            height=140,
+            placeholder=(
+                "Example: Add a supervisor approval requirement before confirmed "
+                "fraud records can be removed from downstream processing."
+            ),
+        )
+
+        if st.session_state.prd_modifications:
+            with st.expander("View previously applied modifications"):
+                for index, item in enumerate(
+                    st.session_state.prd_modifications,
+                    start=1,
+                ):
+                    st.markdown(f"**Modification {index}:** {item}")
+
+        if st.button("Update PRD Preview", type="primary"):
+            cleaned_modification = modification.strip()
+            if not cleaned_modification:
+                st.warning("Enter the information you want to add or change.")
+            else:
+                pending_modifications = [
+                    *st.session_state.prd_modifications,
+                    cleaned_modification,
+                ]
+                combined_modifications = "\n\n".join(
+                    f"Modification {index}: {item}"
+                    for index, item in enumerate(pending_modifications, start=1)
+                )
+                discovery_answers = build_discovery_answers()
+                revision_progress = st.progress(
+                    0,
+                    text="Preparing the updated PRD preview...",
+                )
+
+                def update_revision_progress(completed, total):
+                    percent = int((completed / total) * 100) if total else 0
+                    if completed >= total:
+                        message = "Updated PRD preview complete."
+                    else:
+                        message = (
+                            f"Updating PRD section group {completed + 1} "
+                            f"of {total}..."
+                        )
+                    revision_progress.progress(percent, text=message)
+
+                with st.spinner("Applying your changes to the complete PRD..."):
+                    try:
+                        revised_prd = generate_complete_prd(
+                            st.session_state.product_idea,
+                            st.session_state.questions_raw,
+                            discovery_answers,
+                            st.session_state.breakdown,
+                            rules,
+                            modification_details=combined_modifications,
+                            progress_callback=update_revision_progress,
+                        )
+                    except Exception as error:
+                        st.error(f"PRD preview update failed: {error}")
+                        st.stop()
+
+                st.session_state.prd = revised_prd
+                st.session_state.prd_modifications = pending_modifications
+                st.session_state.clear_modification_input = True
+                st.rerun()
+
+    with download_column:
+        st.subheader("Download PRD")
+        st.write(
+            "Download the current preview after you have finished reviewing "
+            "and applying any requested changes."
+        )
+        st.download_button(
+            label="Download PRD as PDF",
+            data=pdf_data,
+            file_name="Product_Requirements_Document.pdf",
+            mime="application/pdf",
+            type="primary",
+            use_container_width=True,
+        )
