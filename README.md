@@ -29,6 +29,11 @@ This repository showcases professional projects, technical implementations, and 
 
 A Python-based AI agent designed to support and streamline requirements development.
 
+### AI Powered LLM/OCR Document Classification Process
+Built local Python/LLM prototypes for document classification and deterministic support routing, using schema validation, evidence checks, human-review controls, and synthetic test cases to evaluate outputs. NO live Demo.
+
+View code in LLM_OCS_DcoumentClassification Folder.
+
 Additional projects and capabilities will be added as the portfolio evolves.
 
 ## Professional Focus

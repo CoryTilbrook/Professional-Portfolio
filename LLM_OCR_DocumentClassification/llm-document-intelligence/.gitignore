@@ -1,0 +1,21 @@
+# Python virtual environment
+.venv/
+
+# Python-generated files
+__pycache__/
+*.py[cod]
+
+# Test and coverage output
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local configuration and secrets
+.env
+
+# Application-generated data
+data/vector_store/
+outputs/
+
+# VS Code settings
+.vscode/
